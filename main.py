@@ -35,7 +35,6 @@ async def send_telegram(chat_id: int, text: str, reply_markup=None):
         await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json=payload)
 
 def make_buttons(buttons: list):
-    """buttons: list of [text, action] where action is either callback_data or url"""
     keyboard = []
     for row in buttons:
         if len(row) == 2:
@@ -49,17 +48,14 @@ def make_buttons(buttons: list):
 
 # ---------- SMART PARSING ----------
 async def parse_with_cloudflare(text: str) -> dict:
-    # Clean
     text = text.replace(',', '')
     
-    # Find numbers with 'k' (thousand)
     total_match = re.search(r'(\d+[.,]?\d*)\s*k?', text, re.IGNORECASE)
     deposit_match = re.search(r'(?:received|paid|deposit|pay)\s*(\d+[.,]?\d*)\s*k?', text, re.IGNORECASE)
     
     total = float(total_match.group(1)) if total_match else 0
     deposit = float(deposit_match.group(1)) if deposit_match else 0
     
-    # Multiply by 1000 if 'k' is present
     if total_match and 'k' in text[total_match.start():total_match.end()]:
         total = total * 1000
     if deposit_match and 'k' in text[deposit_match.start():deposit_match.end()]:
@@ -67,12 +63,10 @@ async def parse_with_cloudflare(text: str) -> dict:
     
     balance = total - deposit
     
-    # Find client
     client_match = re.search(r'(?:to|for|with)\s+([A-Za-z]+)', text, re.IGNORECASE)
-    client = client_match.group(1) if client_match else 'Unknown'
-    
-    # Find product
     product_match = re.search(r'(?:sold|bought|purchased)\s+([A-Za-z\s]+?)(?:\s+to|\s+for|\s+$)', text, re.IGNORECASE)
+    
+    client = client_match.group(1) if client_match else 'Unknown'
     product = product_match.group(1).strip() if product_match else 'Unknown'
     
     return {
@@ -97,16 +91,21 @@ async def telegram_webhook(request: Request):
         chat_id = callback["message"]["chat"]["id"]
         action = callback["data"]
         
-        if action == "open_app":
+        if action == "save_transaction":
+            # Find the pending transaction for this chat
+            # For now, save a placeholder (we'll implement full DB save later)
+            await send_telegram(chat_id, "✅ *Transaction saved successfully!*")
+        elif action == "edit_transaction":
+            await send_telegram(chat_id, "✏️ Please reply with the corrected transaction details.")
+        elif action == "cancel_transaction":
+            await send_telegram(chat_id, "❌ Transaction cancelled.")
+        elif action == "open_app":
             buttons = make_buttons([["📱 Open TelaBiz", "https://telabiz-frontend.vercel.app"]])
             await send_telegram(chat_id, "📱 *Open your Mini App:*\n\nTap the button below to open your business dashboard.", reply_markup=buttons)
-        
         elif action == "products":
             await send_telegram(chat_id, "📦 *Your Products:*\n\nYou have no products yet. Add them in the Mini App.")
-        
         elif action == "debts":
             await send_telegram(chat_id, "💰 *Your Outstanding Debts:*\n\n🎉 No outstanding debts! Great job!")
-        
         elif action == "pricing":
             buttons = make_buttons([
                 ["🔒 Subscribe to Pro", "subscribe_pro"],
@@ -129,16 +128,11 @@ async def telegram_webhook(request: Request):
 
 *🆓 Free* – ₦0/month
 50 transactions • Basic AI images • Basic storefront
-
-Tap a button below to subscribe! 🚀
 """, reply_markup=buttons)
-        
         elif action == "subscribe_pro":
             await send_telegram(chat_id, "🔒 *Pro Subscription*\n\nComing soon! You'll be able to subscribe via Paystack. 🚀")
-        
         elif action == "subscribe_business":
             await send_telegram(chat_id, "🔒 *Business Subscription*\n\nComing soon! You'll be able to subscribe via Paystack. 🚀")
-        
         elif action == "community":
             buttons = make_buttons([
                 ["📢 Join Channel", "https://t.me/TelaBizChannel"],
@@ -148,27 +142,13 @@ Tap a button below to subscribe! 🚀
             await send_telegram(chat_id, """
 🌐 *TelaBiz Community*
 
-Join thousands of merchants growing together!
-
 📢 *Channel:* @TelaBizChannel
 💬 *Merchant Group:* @TelaBizCommunity
 🛍️ *Buyer Group:* @TelaBizBuyers
-
-Tap a button below to join! 🚀
 """, reply_markup=buttons)
-        
-        elif action == "save_transaction":
-            await send_telegram(chat_id, "✅ *Transaction saved successfully!*")
-        
-        elif action == "edit_transaction":
-            await send_telegram(chat_id, "✏️ Please reply with the corrected transaction details.")
-        
-        elif action == "cancel_transaction":
-            await send_telegram(chat_id, "❌ Transaction cancelled.")
-        
         elif action == "help":
             buttons = make_buttons([
-                ["📱 Open App", "https://telabiz-frontend.vercel.app"],
+                ["📱 Open App", "open_app"],
                 ["💎 Pricing", "pricing"],
                 ["🌐 Community", "community"]
             ])
@@ -182,6 +162,9 @@ Tap a button below to join! 🚀
 • /community - Join community
 • /products - View products
 • /debts - View debts
+• /transactions - View your sales
+• /stats - View your business stats
+• /customer [name] - View customer history
 
 *Quick Start:*
 Type: `Sold Agbada to Tunde for 90k, received 40k`
@@ -213,7 +196,7 @@ Type "Talk to human"
 Your business OS inside Telegram.
 
 🔹 *Try:* `Sold Agbada to Tunde for 90k, received 40k`
-🔹 *Commands:* /help, /pricing, /community, /products, /debts
+🔹 *Commands:* /help, /pricing, /community, /products, /debts, /transactions, /stats
 
 *Start growing your business today!* 🚀
 """, reply_markup=buttons)
@@ -236,6 +219,9 @@ Your business OS inside Telegram.
 • /community - Join community
 • /products - View products
 • /debts - View debts
+• /transactions - View your sales
+• /stats - View your business stats
+• /customer [name] - View customer history
 
 *Quick Start:*
 Type: `Sold Agbada to Tunde for 90k, received 40k`
@@ -268,8 +254,6 @@ Type "Talk to human"
 
 *🆓 Free* – ₦0/month
 50 transactions • Basic AI images • Basic storefront
-
-Tap a button below to subscribe! 🚀
 """, reply_markup=buttons)
             return {"ok": True}
 
@@ -283,13 +267,9 @@ Tap a button below to subscribe! 🚀
             await send_telegram(chat_id, """
 🌐 *TelaBiz Community*
 
-Join thousands of merchants growing together!
-
 📢 *Channel:* @TelaBizChannel
 💬 *Merchant Group:* @TelaBizCommunity
 🛍️ *Buyer Group:* @TelaBizBuyers
-
-Tap a button below to join! 🚀
 """, reply_markup=buttons)
             return {"ok": True}
 
@@ -301,6 +281,77 @@ Tap a button below to join! 🚀
         # ----- DEBTS -----
         if text.lower() in ["/debts", "debts"]:
             await send_telegram(chat_id, "💰 *Your Outstanding Debts:*\n\n🎉 No outstanding debts! Great job!")
+            return {"ok": True}
+
+        # ----- TRANSACTIONS -----
+        if text.lower() in ["/transactions", "transactions"]:
+            merchant_id = "test"
+            async with await get_db() as conn:
+                rows = await conn.fetch('''
+                    SELECT client, product, amount, deposit, balance, created_at
+                    FROM transactions
+                    WHERE merchant_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                ''', merchant_id)
+            
+            if rows:
+                lines = ["📋 *Your Recent Transactions:*\n"]
+                for r in rows:
+                    lines.append(f"• {r['client']} - {r['product']} - ₦{r['amount']:,} (Paid: ₦{r['deposit']:,})")
+                await send_telegram(chat_id, "\n".join(lines))
+            else:
+                await send_telegram(chat_id, "📭 No transactions yet. Start selling!")
+            return {"ok": True}
+
+        # ----- STATS -----
+        if text.lower() in ["/stats", "stats"]:
+            merchant_id = "test"
+            async with await get_db() as conn:
+                row = await conn.fetchrow('''
+                    SELECT 
+                        COUNT(*) as total_sales,
+                        COALESCE(SUM(amount), 0) as total_revenue,
+                        COALESCE(SUM(balance), 0) as total_debt
+                    FROM transactions
+                    WHERE merchant_id = $1
+                ''', merchant_id)
+            
+            await send_telegram(chat_id, f"""
+📊 *Your Business Stats*
+
+💰 *Total Revenue:* ₦{row['total_revenue']:,.2f}
+📦 *Total Sales:* {row['total_sales']}
+💳 *Outstanding Debt:* ₦{row['total_debt']:,.2f}
+
+Keep selling! 🚀
+""")
+            return {"ok": True}
+
+        # ----- CUSTOMER HISTORY -----
+        if text.lower().startswith("/customer"):
+            parts = text.split(" ", 1)
+            if len(parts) < 2:
+                await send_telegram(chat_id, "Please provide a name: `/customer Tunde`")
+                return {"ok": True}
+            
+            customer_name = parts[1]
+            merchant_id = "test"
+            async with await get_db() as conn:
+                rows = await conn.fetch('''
+                    SELECT product, amount, deposit, balance, created_at
+                    FROM transactions
+                    WHERE merchant_id = $1 AND client = $2
+                    ORDER BY created_at DESC
+                ''', merchant_id, customer_name)
+            
+            if rows:
+                lines = [f"📋 *{customer_name}'s Order History:*\n"]
+                for r in rows:
+                    lines.append(f"• {r['product']} - ₦{r['amount']:,} (Paid: ₦{r['deposit']:,}, Balance: ₦{r['balance']:,})")
+                await send_telegram(chat_id, "\n".join(lines))
+            else:
+                await send_telegram(chat_id, f"👤 No orders found for {customer_name}.")
             return {"ok": True}
 
         # ----- SMART SALE DETECTION -----

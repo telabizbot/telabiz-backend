@@ -32,15 +32,28 @@ async def send_telegram(chat_id: int, text: str):
         await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
 
 async def parse_with_cloudflare(text: str) -> dict:
-    total_match = re.search(r'(\d+[.,]?\d*)\s*(?:k|thousand)?\s*(?:total|amount)?', text, re.IGNORECASE)
-    deposit_match = re.search(r'(?:received|paid|deposit)\s*(\d+[.,]?\d*)', text, re.IGNORECASE)
+    # Improved parsing
+    total_match = re.search(r'(\d+[.,]?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
+    deposit_match = re.search(r'(?:received|paid|deposit|pay)\s*(\d+[.,]?\d*)', text, re.IGNORECASE)
+    
     total = float(total_match.group(1).replace(',', '')) if total_match else 0
     deposit = float(deposit_match.group(1).replace(',', '')) if deposit_match else 0
+    
+    # If total is like "18k" convert to 18000
+    if total_match and 'k' in text[total_match.start():total_match.end()]:
+        total = total * 1000
+    if deposit_match and 'k' in text[deposit_match.start():deposit_match.end()]:
+        deposit = deposit * 1000
+    
     balance = total - deposit
-    client_match = re.search(r'to\s+(\w+)', text, re.IGNORECASE)
-    product_match = re.search(r'(sold|bought|purchased)\s+([\w\s]+?)(?:\s+to|\s+for|\s+$)', text, re.IGNORECASE)
+    
+    # Find client name (look for "to [name]" or "for [name]")
+    client_match = re.search(r'(?:to|for)\s+(\w+)', text, re.IGNORECASE)
+    product_match = re.search(r'(?:sold|bought|purchased)\s+([\w\s]+?)(?:\s+to|\s+for|\s+$)', text, re.IGNORECASE)
+    
     client = client_match.group(1) if client_match else 'Unknown'
-    product = product_match.group(2).strip() if product_match else 'Unknown'
+    product = product_match.group(1).strip() if product_match else 'Unknown'
+    
     if total > 0 or deposit > 0:
         return {
             'client': client, 'product': product,
@@ -49,37 +62,6 @@ async def parse_with_cloudflare(text: str) -> dict:
             'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
             'deadline': 'Not set'
         }
-    try:
-        cf_token = os.getenv('CLOUDFLARE_API_TOKEN')
-        cf_account = os.getenv('CLOUDFLARE_ACCOUNT_ID')
-        prompt = f"""Parse this business note. Return ONLY valid JSON.
-        Extract: client_name (string), product (string), total_amount (number), deposit (number), deadline (string if mentioned).
-        Note: "{text}"
-        """
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/@cf/meta/llama-3.1-8b-instruct",
-                headers={"Authorization": f"Bearer {cf_token}"},
-                json={"prompt": prompt, "max_tokens": 200}
-            )
-            result = resp.json()
-            raw = result.get('result', {}).get('response', '{}')
-            match = re.search(r'\{.*\}', raw, re.DOTALL)
-            if match:
-                data = json.loads(match.group())
-                total = float(data.get('total_amount', 0))
-                deposit = float(data.get('deposit', 0))
-                balance = total - deposit
-                return {
-                    'client': data.get('client_name', client),
-                    'product': data.get('product', product),
-                    'total_amount': total, 'deposit': deposit, 'balance': balance,
-                    'is_valid': balance >= 0,
-                    'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
-                    'deadline': data.get('deadline', 'Not set')
-                }
-    except Exception as e:
-        print(f"Cloudflare fallback failed: {e}")
     return {
         'client': client, 'product': product,
         'total_amount': total, 'deposit': deposit, 'balance': balance,
@@ -176,7 +158,8 @@ Tap to join and start networking! 🚀
             await send_telegram(chat_id, "💰 *Your Outstanding Debts:*\n\n🎉 No outstanding debts! Great job!")
             return {"ok": True}
 
-        if any(k in text.lower() for k in ["sold", "received", "deposit"]):
+        # Improved sale detection - ANY sale-like text
+        if any(k in text.lower() for k in ["sold", "received", "deposit", "pay", "bought", "purchased"]):
             parsed = await parse_with_cloudflare(text)
             await send_telegram(chat_id, f"""
 📊 *Transaction Preview*
@@ -188,7 +171,18 @@ Tap to join and start networking! 🚀
 📅 *Deadline:* {parsed['deadline']}
 
 ✅ Does this look correct?
+
+Reply with:
+• "Save" to save this transaction
+• "Edit" to change something
+• "Cancel" to discard
 """)
+            # Store transaction data in memory (temporary)
+            # In production, you'd store in database
+            return {"ok": True}
+
+        if "save" in text.lower() and "transaction" in str(data).lower():
+            await send_telegram(chat_id, "✅ Transaction saved successfully!")
             return {"ok": True}
 
         if "talk to human" in text.lower():

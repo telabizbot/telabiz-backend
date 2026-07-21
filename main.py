@@ -11,7 +11,7 @@ load_dotenv()
 
 app = FastAPI()
 
-# CORS - THIS IS THE FIX
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,35 +28,86 @@ SMART_TEMPLATES = {
     "Bag": {"prompt": "Luxury {color} bag, {style} craftsmanship, {background} background, studio lighting, high-end fashion, detailed, 4k"}
 }
 
-# ---------- TELEGRAM ----------
+# ---------- HELPERS ----------
 async def send_telegram(chat_id: int, text: str):
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     async with httpx.AsyncClient() as client:
         await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
 
-# ---------- PARSE ----------
+# ---------- PARSE WITH REGEX + CLOUDFLARE FALLBACK ----------
 async def parse_with_cloudflare(text: str) -> dict:
-    cf_token = os.getenv('CLOUDFLARE_API_TOKEN')
-    cf_account = os.getenv('CLOUDFLARE_ACCOUNT_ID')
-    prompt = f"""Parse this business note. Return ONLY valid JSON. Extract: client_name (string), product (string), total_amount (number), deposit (number), deadline (string if mentioned). Note: "{text}" """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/@cf/meta/llama-3-8b-instruct", headers={"Authorization": f"Bearer {cf_token}"}, json={"prompt": prompt, "max_tokens": 200})
-        result = resp.json()
-        raw = result.get('result', {}).get('response', '{}')
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        data = json.loads(match.group()) if match else {}
-    total = float(data.get('total_amount', 0))
-    deposit = float(data.get('deposit', 0))
+    # --- 1. Regex First (Fast & Reliable) ---
+    total_match = re.search(r'(\d+[.,]?\d*)\s*(?:k|thousand)?\s*(?:total|amount)?', text, re.IGNORECASE)
+    deposit_match = re.search(r'(?:received|paid|deposit)\s*(\d+[.,]?\d*)', text, re.IGNORECASE)
+    
+    total = float(total_match.group(1).replace(',', '')) if total_match else 0
+    deposit = float(deposit_match.group(1).replace(',', '')) if deposit_match else 0
     balance = total - deposit
+    
+    client_match = re.search(r'to\s+(\w+)', text, re.IGNORECASE)
+    product_match = re.search(r'(sold|bought|purchased)\s+([\w\s]+?)(?:\s+to|\s+for|\s+$)', text, re.IGNORECASE)
+    
+    client = client_match.group(1) if client_match else 'Unknown'
+    product = product_match.group(2).strip() if product_match else 'Unknown'
+    
+    # If regex found clear numbers, return immediately
+    if total > 0 or deposit > 0:
+        return {
+            'client': client,
+            'product': product,
+            'total_amount': total,
+            'deposit': deposit,
+            'balance': balance,
+            'is_valid': balance >= 0,
+            'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
+            'deadline': 'Not set'
+        }
+
+    # --- 2. Cloudflare AI as backup ---
+    try:
+        cf_token = os.getenv('CLOUDFLARE_API_TOKEN')
+        cf_account = os.getenv('CLOUDFLARE_ACCOUNT_ID')
+        prompt = f"""Parse this business note. Return ONLY valid JSON.
+        Extract: client_name (string), product (string), total_amount (number), deposit (number), deadline (string if mentioned).
+        Note: "{text}"
+        """
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/@cf/meta/llama-3.1-8b-instruct",
+                headers={"Authorization": f"Bearer {cf_token}"},
+                json={"prompt": prompt, "max_tokens": 200}
+            )
+            result = resp.json()
+            raw = result.get('result', {}).get('response', '{}')
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if match:
+                data = json.loads(match.group())
+                total = float(data.get('total_amount', 0))
+                deposit = float(data.get('deposit', 0))
+                balance = total - deposit
+                return {
+                    'client': data.get('client_name', client),
+                    'product': data.get('product', product),
+                    'total_amount': total,
+                    'deposit': deposit,
+                    'balance': balance,
+                    'is_valid': balance >= 0,
+                    'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
+                    'deadline': data.get('deadline', 'Not set')
+                }
+    except Exception as e:
+        print(f"Cloudflare AI fallback failed: {e}")
+
+    # --- 3. Last resort ---
     return {
-        'client': data.get('client_name', 'Unknown'),
-        'product': data.get('product', 'Unknown'),
+        'client': client,
+        'product': product,
         'total_amount': total,
         'deposit': deposit,
         'balance': balance,
         'is_valid': balance >= 0,
         'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
-        'deadline': data.get('deadline', 'Not set')
+        'deadline': 'Not set'
     }
 
 # ---------- TELEGRAM WEBHOOK ----------
@@ -134,7 +185,11 @@ async def generate_smart_image(request: Request):
     cf_token = os.getenv('CLOUDFLARE_API_TOKEN')
     cf_account = os.getenv('CLOUDFLARE_ACCOUNT_ID')
     async with httpx.AsyncClient() as client:
-        resp = await client.post(f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/@cf/black-forest-labs/flux-1-schnell", headers={"Authorization": f"Bearer {cf_token}"}, json={"prompt": prompt})
+        resp = await client.post(
+            f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/@cf/black-forest-labs/flux-1-schnell",
+            headers={"Authorization": f"Bearer {cf_token}"},
+            json={"prompt": prompt}
+        )
         image_b64 = resp.json().get('result', {}).get('image')
         return {"image": image_b64, "prompt_used": prompt}
 

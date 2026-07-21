@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import os
 import json
@@ -18,6 +19,13 @@ from cryptography.fernet import Fernet
 load_dotenv()
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 security = HTTPBearer()
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter

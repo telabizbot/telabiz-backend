@@ -1,25 +1,17 @@
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import os
 import json
 import httpx
 import re
-import jwt
-import hmac
-import hashlib
-import urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from cryptography.fernet import Fernet
 
 load_dotenv()
 
 app = FastAPI()
 
-# CORS MUST BE FIRST
+# CORS - THIS IS THE FIX
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,5 +20,128 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Rest of your code ----------
-# JWT and other imports continue...
+# ---------- SMART TEMPLATES ----------
+SMART_TEMPLATES = {
+    "Agbada": {"prompt": "A stunning {color} Agbada, {style} fashion design, {background} background, professional fashion photography, high quality, 4k"},
+    "Dress": {"prompt": "Elegant {color} dress, {style} silhouette, {background} background, fashion editorial, professional lighting, high resolution"},
+    "Shoe": {"prompt": "Premium {color} shoes, {style} design, {background} background, product photography, commercial style, 8k"},
+    "Bag": {"prompt": "Luxury {color} bag, {style} craftsmanship, {background} background, studio lighting, high-end fashion, detailed, 4k"}
+}
+
+# ---------- TELEGRAM ----------
+async def send_telegram(chat_id: int, text: str):
+    token = os.getenv('TELEGRAM_BOT_TOKEN')
+    async with httpx.AsyncClient() as client:
+        await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
+
+# ---------- PARSE ----------
+async def parse_with_cloudflare(text: str) -> dict:
+    cf_token = os.getenv('CLOUDFLARE_API_TOKEN')
+    cf_account = os.getenv('CLOUDFLARE_ACCOUNT_ID')
+    prompt = f"""Parse this business note. Return ONLY valid JSON. Extract: client_name (string), product (string), total_amount (number), deposit (number), deadline (string if mentioned). Note: "{text}" """
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/@cf/meta/llama-3-8b-instruct", headers={"Authorization": f"Bearer {cf_token}"}, json={"prompt": prompt, "max_tokens": 200})
+        result = resp.json()
+        raw = result.get('result', {}).get('response', '{}')
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        data = json.loads(match.group()) if match else {}
+    total = float(data.get('total_amount', 0))
+    deposit = float(data.get('deposit', 0))
+    balance = total - deposit
+    return {
+        'client': data.get('client_name', 'Unknown'),
+        'product': data.get('product', 'Unknown'),
+        'total_amount': total,
+        'deposit': deposit,
+        'balance': balance,
+        'is_valid': balance >= 0,
+        'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
+        'deadline': data.get('deadline', 'Not set')
+    }
+
+# ---------- TELEGRAM WEBHOOK ----------
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    if "message" in data:
+        msg = data["message"]
+        text = msg.get("text", "")
+        chat_id = msg["chat"]["id"]
+
+        if text == "/start":
+            await send_telegram(chat_id, "👋 Welcome to TelaBiz!\n\n🔹 Try: `Sold Agbada to Tunde for 90k, received 40k`\n🔹 Open Mini App: tap the menu button\n🔹 Help: /help\n🔹 Pricing: /pricing\n🔹 Community: /community")
+            return {"ok": True}
+
+        if text.lower() in ["/help", "help"]:
+            await send_telegram(chat_id, "📚 TelaBiz Help\n\n• Type a sale: `Sold X to Y for Z, received deposit`\n• /pricing - See plans\n• /community - Join community\n• Support: type 'Talk to human'")
+            return {"ok": True}
+
+        if text.lower() in ["/pricing", "pricing"]:
+            await send_telegram(chat_id, "💎 TelaBiz Pricing\n\nPro: ₦7,000/month\nBusiness: ₦25,000/month\n\nFree: ₦0/month (50 transactions)")
+            return {"ok": True}
+
+        if text.lower() in ["/community", "community"]:
+            await send_telegram(chat_id, "🌐 TelaBiz Community\n\n📢 Channel: @TelaBizChannel\n💬 Merchant Group: @TelaBizCommunity\n🛍️ Buyer Group: @TelaBizBuyers")
+            return {"ok": True}
+
+        if any(k in text.lower() for k in ["sold", "received", "deposit"]):
+            parsed = await parse_with_cloudflare(text)
+            await send_telegram(chat_id, f"📊 Transaction Preview\n\n{parsed['human_readable']}\n\n👤 Client: {parsed['client']}\n📦 Product: {parsed['product']}\n📅 Deadline: {parsed['deadline']}")
+            return {"ok": True}
+
+        if "talk to human" in text.lower():
+            support_group = os.getenv('SUPPORT_GROUP_ID')
+            if support_group:
+                await send_telegram(support_group, f"🆘 SUPPORT REQUEST\n\nUser: {msg['from']['first_name']}\nID: {chat_id}\nMessage: {text}")
+            await send_telegram(chat_id, "👋 I've notified our support team. You'll get a reply within 24 hours.")
+            return {"ok": True}
+
+        faq = {"cost": "TelaBiz free for 50 transactions/mo. Pro starts at ₦7,000/mo.", "price": "TelaBiz free for 50 transactions/mo.", "offline": "Yes, works offline. Data syncs when online.", "payment": "Cards via Paystack & Mobile Money via Flutterwave."}
+        for key, value in faq.items():
+            if key in text.lower():
+                await send_telegram(chat_id, value)
+                return {"ok": True}
+        await send_telegram(chat_id, "I'm not sure. Type 'Talk to human' for help.")
+    return {"ok": True}
+
+# ---------- API ENDPOINTS ----------
+@app.post("/parse")
+async def parse_text(request: Request):
+    data = await request.json()
+    return await parse_with_cloudflare(data.get("text", ""))
+
+@app.post("/api/transactions")
+async def save_transaction(request: Request):
+    data = await request.json()
+    print(f"📦 Transaction saved: {data}")
+    return {"status": "ok"}
+
+@app.post("/generate-smart-image")
+async def generate_smart_image(request: Request):
+    data = await request.json()
+    product_type = data.get('product_type', 'Custom')
+    color = data.get('color', '')
+    style = data.get('style', '')
+    background = data.get('background', '')
+    custom_prompt = data.get('custom_prompt', '')
+
+    if product_type == 'Custom' and custom_prompt:
+        prompt = f"{custom_prompt}, professional, high quality, studio lighting, 4k"
+    else:
+        template = SMART_TEMPLATES.get(product_type, SMART_TEMPLATES["Agbada"])
+        prompt = template["prompt"].format(color=color or "beautiful", style=style or "modern", background=background or "studio")
+
+    cf_token = os.getenv('CLOUDFLARE_API_TOKEN')
+    cf_account = os.getenv('CLOUDFLARE_ACCOUNT_ID')
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/@cf/black-forest-labs/flux-1-schnell", headers={"Authorization": f"Bearer {cf_token}"}, json={"prompt": prompt})
+        image_b64 = resp.json().get('result', {}).get('image')
+        return {"image": image_b64, "prompt_used": prompt}
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

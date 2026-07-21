@@ -5,7 +5,7 @@ import json
 import httpx
 import re
 import asyncpg
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,7 +25,7 @@ app.add_middleware(
 async def get_db():
     return await asyncpg.connect(os.getenv("DATABASE_URL"))
 
-# ---------- SEND TELEGRAM WITH BUTTONS ----------
+# ---------- SEND MESSAGE WITH BUTTONS ----------
 async def send_telegram(chat_id: int, text: str, reply_markup=None):
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
@@ -35,6 +35,7 @@ async def send_telegram(chat_id: int, text: str, reply_markup=None):
         await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json=payload)
 
 def make_buttons(buttons: list):
+    """buttons: list of [text, action] where action is either callback_data or url"""
     keyboard = []
     for row in buttons:
         if len(row) == 2:
@@ -48,17 +49,17 @@ def make_buttons(buttons: list):
 
 # ---------- SMART PARSING ----------
 async def parse_with_cloudflare(text: str) -> dict:
-    # Clean text
+    # Clean
     text = text.replace(',', '')
     
-    # Handle "k" (thousand) conversion
+    # Find numbers with 'k' (thousand)
     total_match = re.search(r'(\d+[.,]?\d*)\s*k?', text, re.IGNORECASE)
     deposit_match = re.search(r'(?:received|paid|deposit|pay)\s*(\d+[.,]?\d*)\s*k?', text, re.IGNORECASE)
     
     total = float(total_match.group(1)) if total_match else 0
     deposit = float(deposit_match.group(1)) if deposit_match else 0
     
-    # If "k" appears after number, multiply by 1000
+    # Multiply by 1000 if 'k' is present
     if total_match and 'k' in text[total_match.start():total_match.end()]:
         total = total * 1000
     if deposit_match and 'k' in text[deposit_match.start():deposit_match.end()]:
@@ -66,7 +67,7 @@ async def parse_with_cloudflare(text: str) -> dict:
     
     balance = total - deposit
     
-    # Find client name
+    # Find client
     client_match = re.search(r'(?:to|for|with)\s+([A-Za-z]+)', text, re.IGNORECASE)
     client = client_match.group(1) if client_match else 'Unknown'
     
@@ -85,82 +86,87 @@ async def parse_with_cloudflare(text: str) -> dict:
         'deadline': 'Not set'
     }
 
-# Store transaction data temporarily (in memory)
-pending_transactions = {}
-
-# ---------- TELEGRAM WEBHOOK ----------
+# ---------- WEBHOOK ----------
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
     
-    # Handle callback queries (button clicks)
+    # ---------- CALLBACK QUERIES (BUTTON CLICKS) ----------
     if "callback_query" in data:
         callback = data["callback_query"]
         chat_id = callback["message"]["chat"]["id"]
-        data_type = callback["data"]
-        message_id = callback["message"]["message_id"]
+        action = callback["data"]
         
-        if data_type == "save_transaction":
-            await send_telegram(chat_id, "✅ *Transaction saved successfully!*")
-        elif data_type == "edit_transaction":
-            await send_telegram(chat_id, "✏️ Please reply with the corrected transaction details.")
-        elif data_type == "cancel_transaction":
-            await send_telegram(chat_id, "❌ Transaction cancelled.")
-        elif data_type == "products":
-            await send_telegram(chat_id, "📦 *Your Products:*\n\nYou have no products yet.")
-        elif data_type == "debts":
-            await send_telegram(chat_id, "💰 *Your Outstanding Debts:*\n\n🎉 No outstanding debts!")
-        elif data_type == "pricing":
+        if action == "open_app":
+            buttons = make_buttons([["📱 Open TelaBiz", "https://telabiz-frontend.vercel.app"]])
+            await send_telegram(chat_id, "📱 *Open your Mini App:*\n\nTap the button below to open your business dashboard.", reply_markup=buttons)
+        
+        elif action == "products":
+            await send_telegram(chat_id, "📦 *Your Products:*\n\nYou have no products yet. Add them in the Mini App.")
+        
+        elif action == "debts":
+            await send_telegram(chat_id, "💰 *Your Outstanding Debts:*\n\n🎉 No outstanding debts! Great job!")
+        
+        elif action == "pricing":
+            buttons = make_buttons([
+                ["🔒 Subscribe to Pro", "subscribe_pro"],
+                ["🔒 Subscribe to Business", "subscribe_business"]
+            ])
             await send_telegram(chat_id, """
 💎 *TelaBiz Pricing*
 
 *🚀 Pro* – ₦7,000/month
 ✅ Unlimited transactions
 ✅ Advanced AI images
+✅ Video loops
+✅ Analytics
 
 *💼 Business* – ₦25,000/month
 ✅ Everything in Pro
 ✅ Supplier marketplace
+✅ Team accounts
+✅ Custom branding
 
 *🆓 Free* – ₦0/month
-50 transactions • Basic AI images
-""")
-        elif data_type == "community":
+50 transactions • Basic AI images • Basic storefront
+
+Tap a button below to subscribe! 🚀
+""", reply_markup=buttons)
+        
+        elif action == "subscribe_pro":
+            await send_telegram(chat_id, "🔒 *Pro Subscription*\n\nComing soon! You'll be able to subscribe via Paystack. 🚀")
+        
+        elif action == "subscribe_business":
+            await send_telegram(chat_id, "🔒 *Business Subscription*\n\nComing soon! You'll be able to subscribe via Paystack. 🚀")
+        
+        elif action == "community":
+            buttons = make_buttons([
+                ["📢 Join Channel", "https://t.me/TelaBizChannel"],
+                ["💬 Join Merchant Group", "https://t.me/TelaBizCommunity"],
+                ["🛍️ Join Buyer Group", "https://t.me/TelaBizBuyers"]
+            ])
             await send_telegram(chat_id, """
 🌐 *TelaBiz Community*
 
-📢 Channel: @TelaBizChannel
-💬 Merchant Group: @TelaBizCommunity
-🛍️ Buyer Group: @TelaBizBuyers
-""")
-        return {"ok": True}
-    
-    # Handle regular messages
-    if "message" in data:
-        msg = data["message"]
-        text = msg.get("text", "")
-        chat_id = msg["chat"]["id"]
+Join thousands of merchants growing together!
 
-        # ---------- COMMANDS ----------
-        if text == "/start":
-            buttons = make_buttons([
-                ["📱 Open App", "https://telabiz-frontend.vercel.app"],
-                ["📦 Products", "products"],
-                ["💰 Debts", "debts"]
-            ])
-            await send_telegram(chat_id, """
-👋 *Welcome to TelaBiz!*
+📢 *Channel:* @TelaBizChannel
+💬 *Merchant Group:* @TelaBizCommunity
+🛍️ *Buyer Group:* @TelaBizBuyers
 
-Your business OS inside Telegram.
-
-🔹 *Try:* `Sold Agbada to Tunde for 90k, received 40k`
-🔹 *Commands:* /help, /pricing, /community, /products, /debts
-
-*Start growing your business today!* 🚀
+Tap a button below to join! 🚀
 """, reply_markup=buttons)
-            return {"ok": True}
-
-        if text.lower() in ["/help", "help"]:
+        
+        elif action == "save_transaction":
+            await send_telegram(chat_id, "✅ *Transaction saved successfully!*")
+        
+        elif action == "edit_transaction":
+            await send_telegram(chat_id, "✏️ Please reply with the corrected transaction details.")
+        
+        elif action == "cancel_transaction":
+            await send_telegram(chat_id, "❌ Transaction cancelled.")
+        
+        elif action == "help":
             buttons = make_buttons([
                 ["📱 Open App", "https://telabiz-frontend.vercel.app"],
                 ["💎 Pricing", "pricing"],
@@ -183,12 +189,67 @@ Type: `Sold Agbada to Tunde for 90k, received 40k`
 *Support:*
 Type "Talk to human"
 """, reply_markup=buttons)
+        
+        return {"ok": True}
+    
+    # ---------- REGULAR MESSAGES ----------
+    if "message" in data:
+        msg = data["message"]
+        text = msg.get("text", "")
+        chat_id = msg["chat"]["id"]
+
+        # ----- START -----
+        if text == "/start":
+            buttons = make_buttons([
+                ["📱 Open App", "open_app"],
+                ["📦 Products", "products"],
+                ["💰 Debts", "debts"],
+                ["💎 Pricing", "pricing"],
+                ["🌐 Community", "community"]
+            ])
+            await send_telegram(chat_id, """
+👋 *Welcome to TelaBiz!*
+
+Your business OS inside Telegram.
+
+🔹 *Try:* `Sold Agbada to Tunde for 90k, received 40k`
+🔹 *Commands:* /help, /pricing, /community, /products, /debts
+
+*Start growing your business today!* 🚀
+""", reply_markup=buttons)
             return {"ok": True}
 
+        # ----- HELP -----
+        if text.lower() in ["/help", "help"]:
+            buttons = make_buttons([
+                ["📱 Open App", "open_app"],
+                ["💎 Pricing", "pricing"],
+                ["🌐 Community", "community"]
+            ])
+            await send_telegram(chat_id, """
+📚 *TelaBiz Help*
+
+*Commands:*
+• /start - Welcome
+• /help - This help
+• /pricing - View plans
+• /community - Join community
+• /products - View products
+• /debts - View debts
+
+*Quick Start:*
+Type: `Sold Agbada to Tunde for 90k, received 40k`
+
+*Support:*
+Type "Talk to human"
+""", reply_markup=buttons)
+            return {"ok": True}
+
+        # ----- PRICING -----
         if text.lower() in ["/pricing", "pricing"]:
             buttons = make_buttons([
-                ["🔒 Subscribe to Pro", "#"],
-                ["🔒 Subscribe to Business", "#"]
+                ["🔒 Subscribe to Pro", "subscribe_pro"],
+                ["🔒 Subscribe to Business", "subscribe_business"]
             ])
             await send_telegram(chat_id, """
 💎 *TelaBiz Pricing*
@@ -207,9 +268,12 @@ Type "Talk to human"
 
 *🆓 Free* – ₦0/month
 50 transactions • Basic AI images • Basic storefront
+
+Tap a button below to subscribe! 🚀
 """, reply_markup=buttons)
             return {"ok": True}
 
+        # ----- COMMUNITY -----
         if text.lower() in ["/community", "community"]:
             buttons = make_buttons([
                 ["📢 Join Channel", "https://t.me/TelaBizChannel"],
@@ -229,15 +293,17 @@ Tap a button below to join! 🚀
 """, reply_markup=buttons)
             return {"ok": True}
 
+        # ----- PRODUCTS -----
         if text.lower() in ["/products", "products"]:
             await send_telegram(chat_id, "📦 *Your Products:*\n\nYou have no products yet. Add them in the Mini App.")
             return {"ok": True}
 
+        # ----- DEBTS -----
         if text.lower() in ["/debts", "debts"]:
             await send_telegram(chat_id, "💰 *Your Outstanding Debts:*\n\n🎉 No outstanding debts! Great job!")
             return {"ok": True}
 
-        # ---------- SMART SALE DETECTION ----------
+        # ----- SMART SALE DETECTION -----
         if any(k in text.lower() for k in ["sold", "received", "deposit", "pay", "bought", "purchased"]):
             parsed = await parse_with_cloudflare(text)
             buttons = make_buttons([
@@ -258,14 +324,19 @@ Tap a button below:
 """, reply_markup=buttons)
             return {"ok": True}
 
-        # ---------- FAQ ----------
-        faq = {"cost": "TelaBiz free for 50 transactions/mo. Pro starts at ₦7,000/mo.", "price": "TelaBiz free for 50 transactions/mo.", "offline": "Yes, works offline. Data syncs when online.", "payment": "Cards via Paystack & Mobile Money via Flutterwave."}
+        # ----- FAQ -----
+        faq = {
+            "cost": "TelaBiz free for 50 transactions/mo. Pro starts at ₦7,000/mo.",
+            "price": "TelaBiz free for 50 transactions/mo.",
+            "offline": "Yes, works offline. Data syncs when online.",
+            "payment": "Cards via Paystack & Mobile Money via Flutterwave."
+        }
         for key, value in faq.items():
             if key in text.lower():
                 await send_telegram(chat_id, value)
                 return {"ok": True}
-        
-        # ---------- TALK TO HUMAN ----------
+
+        # ----- TALK TO HUMAN -----
         if "talk to human" in text.lower():
             support_group = os.getenv('SUPPORT_GROUP_ID')
             if support_group:
@@ -330,7 +401,6 @@ async def health():
 async def root():
     return {"message": "TelaBiz Backend is running!", "status": "ok"}
 
-# ---------- PRICES ----------
 @app.get("/api/prices")
 async def get_prices():
     return {

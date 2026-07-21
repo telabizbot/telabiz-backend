@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import json
@@ -21,17 +21,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- DATABASE CONNECTION ----------
 async def get_db():
-    return await asyncpg.connect(os.getenv('DATABASE_URL'))
-
-# ---------- SMART TEMPLATES ----------
-SMART_TEMPLATES = {
-    "Agbada": {"prompt": "A stunning {color} Agbada, {style} fashion design, {background} background, professional fashion photography, high quality, 4k"},
-    "Dress": {"prompt": "Elegant {color} dress, {style} silhouette, {background} background, fashion editorial, professional lighting, high resolution"},
-    "Shoe": {"prompt": "Premium {color} shoes, {style} design, {background} background, product photography, commercial style, 8k"},
-    "Bag": {"prompt": "Luxury {color} bag, {style} craftsmanship, {background} background, studio lighting, high-end fashion, detailed, 4k"}
-}
+    return await asyncpg.connect(os.getenv("DATABASE_URL"))
 
 # ---------- HELPERS ----------
 async def send_telegram(chat_id: int, text: str):
@@ -40,20 +31,15 @@ async def send_telegram(chat_id: int, text: str):
         await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
 
 async def parse_with_cloudflare(text: str) -> dict:
-    # Regex first
     total_match = re.search(r'(\d+[.,]?\d*)\s*(?:k|thousand)?\s*(?:total|amount)?', text, re.IGNORECASE)
     deposit_match = re.search(r'(?:received|paid|deposit)\s*(\d+[.,]?\d*)', text, re.IGNORECASE)
-    
     total = float(total_match.group(1).replace(',', '')) if total_match else 0
     deposit = float(deposit_match.group(1).replace(',', '')) if deposit_match else 0
     balance = total - deposit
-    
     client_match = re.search(r'to\s+(\w+)', text, re.IGNORECASE)
     product_match = re.search(r'(sold|bought|purchased)\s+([\w\s]+?)(?:\s+to|\s+for|\s+$)', text, re.IGNORECASE)
-    
     client = client_match.group(1) if client_match else 'Unknown'
     product = product_match.group(2).strip() if product_match else 'Unknown'
-    
     if total > 0 or deposit > 0:
         return {
             'client': client, 'product': product,
@@ -62,8 +48,6 @@ async def parse_with_cloudflare(text: str) -> dict:
             'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
             'deadline': 'Not set'
         }
-
-    # Cloudflare fallback
     try:
         cf_token = os.getenv('CLOUDFLARE_API_TOKEN')
         cf_account = os.getenv('CLOUDFLARE_ACCOUNT_ID')
@@ -95,7 +79,6 @@ async def parse_with_cloudflare(text: str) -> dict:
                 }
     except Exception as e:
         print(f"Cloudflare fallback failed: {e}")
-
     return {
         'client': client, 'product': product,
         'total_amount': total, 'deposit': deposit, 'balance': balance,
@@ -114,11 +97,28 @@ async def telegram_webhook(request: Request):
         chat_id = msg["chat"]["id"]
 
         if text == "/start":
-            await send_telegram(chat_id, "👋 Welcome to TelaBiz!\n\n🔹 Try: `Sold Agbada to Tunde for 90k, received 40k`\n🔹 Open Mini App: tap the menu button\n🔹 Help: /help\n🔹 Pricing: /pricing\n🔹 Community: /community")
+            await send_telegram(chat_id, """
+👋 Welcome to TelaBiz!
+
+Your business OS inside Telegram.
+
+🔹 Try: `Sold Agbada to Tunde for 90k, received 40k`
+🔹 Open Mini App: tap the menu button
+🔹 Help: /help
+🔹 Pricing: /pricing
+🔹 Community: /community
+""")
             return {"ok": True}
 
         if text.lower() in ["/help", "help"]:
-            await send_telegram(chat_id, "📚 TelaBiz Help\n\n• Type a sale: `Sold X to Y for Z, received deposit`\n• /pricing - See plans\n• /community - Join community\n• Support: type 'Talk to human'")
+            await send_telegram(chat_id, """
+📚 TelaBiz Help
+
+• Type a sale: `Sold X to Y for Z, received deposit`
+• /pricing - See plans
+• /community - Join community
+• Support: type 'Talk to human'
+""")
             return {"ok": True}
 
         if text.lower() in ["/pricing", "pricing"]:
@@ -150,150 +150,17 @@ async def telegram_webhook(request: Request):
     return {"ok": True}
 
 # ---------- API ENDPOINTS ----------
-
-# Health check
-@app.get("/health")
-async def health():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
-
-@app.get("/")
-async def root():
-    return {"message": "TelaBiz Backend is running!", "status": "ok"}
-
-# Parse scratchpad
 @app.post("/parse")
 async def parse_text(request: Request):
     data = await request.json()
     return await parse_with_cloudflare(data.get("text", ""))
 
-# ---------- PRODUCTS ----------
-@app.post("/api/products")
-async def create_product(request: Request):
-    data = await request.json()
-    merchant_id = data.get('merchant_id')
-    if not merchant_id:
-        raise HTTPException(status_code=400, detail="Merchant ID required")
-    
-    async with await get_db() as conn:
-        result = await conn.fetchrow('''
-            INSERT INTO products (merchant_id, name, description, price, category, stock, images, variations)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id
-        ''', merchant_id, data.get('name'), data.get('description'), 
-            data.get('price'), data.get('category'), data.get('stock', 0),
-            json.dumps(data.get('images', [])), json.dumps(data.get('variations', [])))
-    
-    return {"status": "success", "product_id": str(result['id'])}
-
-@app.get("/api/products")
-async def get_products(request: Request):
-    merchant_id = request.query_params.get('merchant_id')
-    async with await get_db() as conn:
-        if merchant_id:
-            rows = await conn.fetch('SELECT * FROM products WHERE merchant_id = $1 ORDER BY created_at DESC', merchant_id)
-        else:
-            rows = await conn.fetch('SELECT * FROM products ORDER BY created_at DESC')
-        return {"products": [dict(row) for row in rows]}
-
-@app.delete("/api/products/{product_id}")
-async def delete_product(product_id: str):
-    async with await get_db() as conn:
-        await conn.execute('DELETE FROM products WHERE id = $1', product_id)
-    return {"status": "deleted"}
-
-# ---------- TRANSACTIONS ----------
 @app.post("/api/transactions")
 async def save_transaction(request: Request):
     data = await request.json()
-    merchant_id = data.get('merchant_id')
-    if not merchant_id:
-        raise HTTPException(status_code=400, detail="Merchant ID required")
-    
-    client_name = data.get('client', 'Unknown')
-    product_name = data.get('product', 'Unknown')
-    total_amount = data.get('total_amount', 0)
-    deposit = data.get('deposit', 0)
-    balance = data.get('balance', 0)
-    
-    async with await get_db() as conn:
-        # Get or create customer
-        customer_row = await conn.fetchrow(
-            'SELECT id FROM customers WHERE merchant_id = $1 AND name = $2',
-            merchant_id, client_name
-        )
-        if customer_row:
-            customer_id = customer_row['id']
-        else:
-            customer_row = await conn.fetchrow(
-                'INSERT INTO customers (merchant_id, name) VALUES ($1, $2) RETURNING id',
-                merchant_id, client_name
-            )
-            customer_id = customer_row['id']
-        
-        # Insert transaction
-        result = await conn.fetchrow('''
-            INSERT INTO transactions (merchant_id, customer_id, product, amount, deposit, balance, status)
-            VALUES ($1, $2, $3, $4, $5, $6, 'completed')
-            RETURNING id
-        ''', merchant_id, customer_id, product_name, total_amount, deposit, balance)
-        
-        # Update debt
-        if balance > 0:
-            debt_row = await conn.fetchrow(
-                'SELECT id FROM debts WHERE merchant_id = $1 AND customer_id = $2 AND status = $3',
-                merchant_id, customer_id, 'active'
-            )
-            if debt_row:
-                await conn.execute('''
-                    UPDATE debts SET total_owed = $1, balance = $2, updated_at = NOW()
-                    WHERE id = $3
-                ''', total_amount, balance, debt_row['id'])
-            else:
-                await conn.execute('''
-                    INSERT INTO debts (merchant_id, customer_id, total_owed, balance, status)
-                    VALUES ($1, $2, $3, $4, 'active')
-                ''', merchant_id, customer_id, total_amount, balance)
-    
-    return {"status": "success", "transaction_id": str(result['id'])}
+    print(f"📦 Transaction saved: {data}")
+    return {"status": "success", "message": "Transaction saved!"}
 
-# ---------- DEBTS ----------
-@app.get("/api/debts")
-async def get_debts(request: Request):
-    merchant_id = request.query_params.get('merchant_id')
-    if not merchant_id:
-        raise HTTPException(status_code=400, detail="Merchant ID required")
-    
-    async with await get_db() as conn:
-        rows = await conn.fetch('''
-            SELECT d.*, c.name as customer_name 
-            FROM debts d 
-            JOIN customers c ON d.customer_id = c.id 
-            WHERE d.merchant_id = $1 AND d.status = 'active'
-            ORDER BY d.balance DESC
-        ''', merchant_id)
-        return {"debts": [dict(row) for row in rows]}
-
-@app.post("/api/debts/remind")
-async def send_debt_reminder(request: Request):
-    data = await request.json()
-    print(f"🔔 Reminder sent for debt: {data}")
-    return {"status": "ok"}
-
-# ---------- PAYMENT LINKS ----------
-@app.post("/api/payment-link")
-async def generate_payment_link(request: Request):
-    data = await request.json()
-    amount = data.get('amount', 0)
-    product_name = data.get('product', 'Product')
-    merchant_id = data.get('merchant_id')
-    
-    # Mock Paystack link (replace with actual integration)
-    return {
-        "link": f"https://paystack.com/pay/test?ref={merchant_id}-{int(amount)}",
-        "reference": f"test_ref_{merchant_id}_{int(amount)}"
-    }
-
-# ---------- AI IMAGE GENERATION ----------
 @app.post("/generate-smart-image")
 async def generate_smart_image(request: Request):
     data = await request.json()
@@ -302,6 +169,13 @@ async def generate_smart_image(request: Request):
     style = data.get('style', '')
     background = data.get('background', '')
     custom_prompt = data.get('custom_prompt', '')
+
+    SMART_TEMPLATES = {
+        "Agbada": {"prompt": "A stunning {color} Agbada, {style} fashion design, {background} background, professional fashion photography, high quality, 4k"},
+        "Dress": {"prompt": "Elegant {color} dress, {style} silhouette, {background} background, fashion editorial, professional lighting, high resolution"},
+        "Shoe": {"prompt": "Premium {color} shoes, {style} design, {background} background, product photography, commercial style, 8k"},
+        "Bag": {"prompt": "Luxury {color} bag, {style} craftsmanship, {background} background, studio lighting, high-end fashion, detailed, 4k"}
+    }
 
     if product_type == 'Custom' and custom_prompt:
         prompt = f"{custom_prompt}, professional, high quality, studio lighting, 4k"
@@ -321,29 +195,15 @@ async def generate_smart_image(request: Request):
         image_b64 = resp.json().get('result', {}).get('image')
         return {"image": image_b64, "prompt_used": prompt}
 
-# ---------- AUTH ----------
-@app.post("/api/auth/telegram")
-async def auth_telegram(request: Request):
-    data = await request.json()
-    telegram_id = data.get('telegram_id')
-    username = data.get('username', '')
-    first_name = data.get('first_name', '')
-    
-    if not telegram_id:
-        return {"error": "No telegram_id provided"}
-    
-    return {
-        "status": "success",
-        "merchant": {
-            "id": str(telegram_id),
-            "name": first_name or username,
-            "telegram_id": telegram_id,
-            "plan": "free",
-            "verified": False
-        }
-    }
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
-# ---------- PRICES ----------
+@app.get("/")
+async def root():
+    return {"message": "TelaBiz Backend is running!", "status": "ok"}
+
+# --- PRICES ---
 @app.get("/api/prices")
 async def get_prices():
     return {

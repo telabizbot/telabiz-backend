@@ -28,7 +28,7 @@ SMART_TEMPLATES = {
     "Bag": {"prompt": "Luxury {color} bag, {style} craftsmanship, {background} background, studio lighting, high-end fashion, detailed, 4k"}
 }
 
-# ---------- HELPERS ----------
+# ---------- HELPER: SEND TELEGRAM ----------
 async def send_telegram(chat_id: int, text: str):
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     async with httpx.AsyncClient() as client:
@@ -36,7 +36,7 @@ async def send_telegram(chat_id: int, text: str):
 
 # ---------- PARSE WITH REGEX + CLOUDFLARE FALLBACK ----------
 async def parse_with_cloudflare(text: str) -> dict:
-    # --- 1. Regex First (Fast & Reliable) ---
+    # Regex first
     total_match = re.search(r'(\d+[.,]?\d*)\s*(?:k|thousand)?\s*(?:total|amount)?', text, re.IGNORECASE)
     deposit_match = re.search(r'(?:received|paid|deposit)\s*(\d+[.,]?\d*)', text, re.IGNORECASE)
     
@@ -50,20 +50,16 @@ async def parse_with_cloudflare(text: str) -> dict:
     client = client_match.group(1) if client_match else 'Unknown'
     product = product_match.group(2).strip() if product_match else 'Unknown'
     
-    # If regex found clear numbers, return immediately
     if total > 0 or deposit > 0:
         return {
-            'client': client,
-            'product': product,
-            'total_amount': total,
-            'deposit': deposit,
-            'balance': balance,
+            'client': client, 'product': product,
+            'total_amount': total, 'deposit': deposit, 'balance': balance,
             'is_valid': balance >= 0,
             'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
             'deadline': 'Not set'
         }
 
-    # --- 2. Cloudflare AI as backup ---
+    # Cloudflare fallback
     try:
         cf_token = os.getenv('CLOUDFLARE_API_TOKEN')
         cf_account = os.getenv('CLOUDFLARE_ACCOUNT_ID')
@@ -88,23 +84,17 @@ async def parse_with_cloudflare(text: str) -> dict:
                 return {
                     'client': data.get('client_name', client),
                     'product': data.get('product', product),
-                    'total_amount': total,
-                    'deposit': deposit,
-                    'balance': balance,
+                    'total_amount': total, 'deposit': deposit, 'balance': balance,
                     'is_valid': balance >= 0,
                     'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
                     'deadline': data.get('deadline', 'Not set')
                 }
     except Exception as e:
-        print(f"Cloudflare AI fallback failed: {e}")
+        print(f"Cloudflare fallback failed: {e}")
 
-    # --- 3. Last resort ---
     return {
-        'client': client,
-        'product': product,
-        'total_amount': total,
-        'deposit': deposit,
-        'balance': balance,
+        'client': client, 'product': product,
+        'total_amount': total, 'deposit': deposit, 'balance': balance,
         'is_valid': balance >= 0,
         'human_readable': f"Total: ₦{total:,.2f} - Deposit: ₦{deposit:,.2f} = Balance: ₦{balance:,.2f}",
         'deadline': 'Not set'
@@ -165,7 +155,7 @@ async def parse_text(request: Request):
 async def save_transaction(request: Request):
     data = await request.json()
     print(f"📦 Transaction saved: {data}")
-    return {"status": "ok"}
+    return {"status": "success", "message": "Transaction saved!", "transaction_id": "tx_123456"}
 
 @app.post("/generate-smart-image")
 async def generate_smart_image(request: Request):
@@ -184,6 +174,7 @@ async def generate_smart_image(request: Request):
 
     cf_token = os.getenv('CLOUDFLARE_API_TOKEN')
     cf_account = os.getenv('CLOUDFLARE_ACCOUNT_ID')
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/@cf/black-forest-labs/flux-1-schnell",
@@ -196,6 +187,10 @@ async def generate_smart_image(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.get("/")
+async def root():
+    return {"message": "TelaBiz Backend is running!", "status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn

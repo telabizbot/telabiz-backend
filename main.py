@@ -21,6 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------- DATABASE CONNECTION ----------
 async def get_db():
     return await asyncpg.connect(os.getenv("DATABASE_URL"))
 
@@ -98,40 +99,96 @@ async def telegram_webhook(request: Request):
 
         if text == "/start":
             await send_telegram(chat_id, """
-👋 Welcome to TelaBiz!
+👋 *Welcome to TelaBiz!*
 
 Your business OS inside Telegram.
 
-🔹 Try: `Sold Agbada to Tunde for 90k, received 40k`
-🔹 Open Mini App: tap the menu button
-🔹 Help: /help
-🔹 Pricing: /pricing
-🔹 Community: /community
+🔹 *Try:* `Sold Agbada to Tunde for 90k, received 40k`
+🔹 *Open Mini App:* tap the menu button
+🔹 *Commands:* /help, /pricing, /community, /products, /debts
+
+*Start growing your business today!* 🚀
 """)
             return {"ok": True}
 
         if text.lower() in ["/help", "help"]:
             await send_telegram(chat_id, """
-📚 TelaBiz Help
+📚 *TelaBiz Help*
 
-• Type a sale: `Sold X to Y for Z, received deposit`
-• /pricing - See plans
-• /community - Join community
-• Support: type 'Talk to human'
+*Commands:*
+• /start - Welcome message
+• /help - Show this help
+• /pricing - View plans
+• /community - Join our community
+• /products - View your products
+• /debts - View outstanding debts
+
+*Quick Start:*
+Type: `Sold Agbada to Tunde for 90k, received 40k`
+
+*Support:*
+Type "Talk to human" to reach us.
 """)
             return {"ok": True}
 
         if text.lower() in ["/pricing", "pricing"]:
-            await send_telegram(chat_id, "💎 TelaBiz Pricing\n\nPro: ₦7,000/month\nBusiness: ₦25,000/month\n\nFree: ₦0/month (50 transactions)")
+            await send_telegram(chat_id, """
+💎 *TelaBiz Pricing*
+
+*🚀 Pro* – ₦7,000/month
+✅ Unlimited transactions
+✅ Advanced AI images
+✅ Video loops
+✅ Analytics
+
+*💼 Business* – ₦25,000/month
+✅ Everything in Pro
+✅ Supplier marketplace
+✅ Team accounts
+✅ Custom branding
+
+*🆓 Free* – ₦0/month
+50 transactions • Basic AI images • Basic storefront
+
+Open the Mini App to subscribe! 🚀
+""")
             return {"ok": True}
 
         if text.lower() in ["/community", "community"]:
-            await send_telegram(chat_id, "🌐 TelaBiz Community\n\n📢 Channel: @TelaBizChannel\n💬 Merchant Group: @TelaBizCommunity\n🛍️ Buyer Group: @TelaBizBuyers")
+            await send_telegram(chat_id, """
+🌐 *TelaBiz Community*
+
+Join thousands of merchants growing together!
+
+📢 *Channel:* @TelaBizChannel
+💬 *Merchant Group:* @TelaBizCommunity
+🛍️ *Buyer Group:* @TelaBizBuyers
+
+Tap to join and start networking! 🚀
+""")
+            return {"ok": True}
+
+        if text.lower() in ["/products", "products"]:
+            await send_telegram(chat_id, "📦 *Your Products:*\n\nYou have no products yet. Add them in the Mini App.")
+            return {"ok": True}
+
+        if text.lower() in ["/debts", "debts"]:
+            await send_telegram(chat_id, "💰 *Your Outstanding Debts:*\n\n🎉 No outstanding debts! Great job!")
             return {"ok": True}
 
         if any(k in text.lower() for k in ["sold", "received", "deposit"]):
             parsed = await parse_with_cloudflare(text)
-            await send_telegram(chat_id, f"📊 Transaction Preview\n\n{parsed['human_readable']}\n\n👤 Client: {parsed['client']}\n📦 Product: {parsed['product']}\n📅 Deadline: {parsed['deadline']}")
+            await send_telegram(chat_id, f"""
+📊 *Transaction Preview*
+
+{parsed['human_readable']}
+
+👤 *Client:* {parsed['client']}
+📦 *Product:* {parsed['product']}
+📅 *Deadline:* {parsed['deadline']}
+
+✅ Does this look correct?
+""")
             return {"ok": True}
 
         if "talk to human" in text.lower():
@@ -203,7 +260,7 @@ async def health():
 async def root():
     return {"message": "TelaBiz Backend is running!", "status": "ok"}
 
-# --- PRICES ---
+# ---------- PRICES ----------
 @app.get("/api/prices")
 async def get_prices():
     return {

@@ -185,20 +185,20 @@ async def authenticate(request: Request):
 
 @app.post("/parse")
 @limiter.limit("30/minute")
-async def parse_text(request: Request, user=Depends(verify_jwt)):
+async def parse_text(request: Request):
     data = await request.json()
     return await parse_with_cloudflare(data.get("text", ""))
 
 @app.post("/api/transactions")
 @limiter.limit("30/minute")
-async def save_transaction(request: Request, user=Depends(verify_jwt)):
+async def save_transaction(request: Request):
     data = await request.json()
     print(f"📦 Transaction saved: {data}")
     return {"status": "ok"}
 
 @app.post("/generate-smart-image")
 @limiter.limit("5/minute")
-async def generate_smart_image(request: Request, user=Depends(verify_jwt)):
+async def generate_smart_image(request: Request):
     data = await request.json()
     product_type = data.get('product_type', 'Custom')
     color = data.get('color', '')
